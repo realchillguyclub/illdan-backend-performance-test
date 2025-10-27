@@ -1,0 +1,93 @@
+name: Run K6 Test on PR (single script only)
+
+on:
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'scripts/**/*.js'
+
+env:
+  TARGET_URL: ${{ secrets.TARGET_URL }}
+  REMOTE_BASE_PATH: ${{ secrets.REMOTE_BASE_PATH }}
+
+jobs:
+  run-k6-single:
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------
+      # 1️⃣ 저장소 체크아웃
+      # ------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ------------------------------------------------------------
+      # 2️⃣ scripts 폴더 내 JS 파일 개수를 확인
+      #     - 실제 PR HEAD 기준으로 존재하는 파일 개수만 계산
+      #     - 딱 1개여야 통과, 아니면 오류 발생
+      # ------------------------------------------------------------
+      - name: Ensure exactly one JS script exists
+        id: pick_script
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          # scripts 폴더 내 JS 파일 목록 추출
+          mapfile -t FILES < <(find scripts -type f -name '*.js' | sort -u)
+          COUNT=${#FILES[@]}
+          echo "scripts/**/*.js found: ${COUNT}"
+
+          # 파일이 정확히 1개가 아니면 에러
+          if [ "$COUNT" -ne 1 ]; then
+            echo "::error::scripts 폴더에는 JS 파일이 정확히 1개만 존재해야 합니다. 현재 개수=${COUNT}"
+            echo "scripts_present=${COUNT}" >> "$GITHUB_OUTPUT"
+            exit 1
+          fi
+
+          # 정확히 1개면 경로를 출력 변수로 전달
+          echo "script_path=${FILES[0]}" >> "$GITHUB_OUTPUT"
+          echo "scripts_present=1" >> "$GITHUB_OUTPUT"
+
+      # ------------------------------------------------------------
+      # 3️⃣ EC2로 스크립트 파일 전송
+      #     - scp-action을 사용해 scripts 내 단일 JS 파일을
+      #       EC2의 k6 디렉토리(볼륨 마운트 경로)로 복사
+      # ------------------------------------------------------------
+      - name: Transfer script to EC2
+        if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_KEY }}
+          source: ${{ steps.pick_script.outputs.script_path }}
+          target: ${{ env.REMOTE_BASE_PATH }}/k6
+
+      # ------------------------------------------------------------
+      # 4️⃣ EC2에서 docker-compose를 통해 k6 실행
+      #     - influxdb로 결과를 저장하고, ACCESS_TOKEN과 TARGET_URL을 환경 변수로 전달
+      # ------------------------------------------------------------
+      - name: Run k6 on EC2 (with influxdb output)
+        if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.AWS_HOST }}
+          username: ${{ secrets.AWS_USER }}
+          key: ${{ secrets.AWS_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd "${{ env.REMOTE_BASE_PATH }}"    
+
+            # GitHub Actions에서 넘겨받은 파일명 추출
+            SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
+
+            echo "🚀 Running k6 test: ${SCRIPT_FILE}"
+
+            # docker-compose로 k6 테스트 실행
+            docker-compose run --rm k6 run \
+              -o influxdb=http://influxdb:8086/k6 \     
+              -e BASE_URL="${{ env.TARGET_URL }}" \     
+              -e TOKEN="Bearer ${{ secrets.ACCESS_TOKEN }}" \  
+              "/scripts/${SCRIPT_FILE}"
