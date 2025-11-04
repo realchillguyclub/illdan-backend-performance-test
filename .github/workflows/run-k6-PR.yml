@@ -48,21 +48,6 @@ jobs:
           # 정확히 1개면 경로를 출력 변수로 전달
           echo "script_path=${FILES[0]}" >> "$GITHUB_OUTPUT"
           echo "scripts_present=1" >> "$GITHUB_OUTPUT"
-          
-      # 3️⃣ 기존 JS 스크립트 파일 정리
-      - name: Clean old JS in remote k6 dir
-        if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.AWS_HOST }}
-          username: ${{ secrets.AWS_USER }}
-          key: ${{ secrets.AWS_SSH_KEY }}
-          script: |
-            bash -lc '
-              set -euo pipefail
-              echo "🧹 Removing old JS files in ${{ env.REMOTE_BASE_PATH }}/k6"
-              find "${{ env.REMOTE_BASE_PATH }}/k6" -maxdepth 1 -type f -name "*.js" -print -delete || true
-            '
 
       # ------------------------------------------------------------
       # 3️⃣ EC2로 스크립트 파일을 임시 파일(.tmp)로 전송
