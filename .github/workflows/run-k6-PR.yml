@@ -65,11 +65,9 @@ jobs:
             '
 
       # ------------------------------------------------------------
-      # 3️⃣ EC2로 스크립트 파일 전송
-      #     - scp-action을 사용해 scripts 내 단일 JS 파일을
-      #       EC2의 k6 디렉토리(볼륨 마운트 경로)로 복사
+      # 3️⃣ EC2로 스크립트 파일을 임시 파일(.tmp)로 전송
       # ------------------------------------------------------------
-      - name: Transfer script to EC2
+      - name: Transfer script to EC2 (as .tmp file)
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -79,12 +77,12 @@ jobs:
           source: ${{ steps.pick_script.outputs.script_path }}
           target: ${{ env.REMOTE_BASE_PATH }}/k6
           strip_components: 1
+          rename: $(basename ${{ steps.pick_script.outputs.script_path }}).tmp
 
       # ------------------------------------------------------------
-      # 4️⃣ EC2에서 docker-compose를 통해 k6 실행
-      #     - influxdb로 결과를 저장하고, ACCESS_TOKEN과 TARGET_URL을 환경 변수로 전달
+      # 4️⃣ 원자적 교체(mv) ➡️ k6 실행 ➡️ 자동 정리(trap)
       # ------------------------------------------------------------
-      - name: Run k6 on EC2 (with influxdb output)
+      - name: Atomically Replace, Run k6, and Cleanup
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -94,15 +92,34 @@ jobs:
           script: |
             bash -lc '
               set -euo pipefail
-              cd "${{ env.REMOTE_BASE_PATH }}"    
-  
-              # GitHub Actions에서 넘겨받은 파일명 추출
+              cd "${{ env.REMOTE_BASE_PATH }}"
+
+              # 1. 파일 경로 정의
               SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
-  
+              HOST_SCRIPT_PATH="k6/${SCRIPT_FILE}"
+              HOST_TEMP_PATH="k6/${SCRIPT_FILE}.tmp"
+
+              # 2. 🧹 스크립트 종료 시 무조건 실행될 정리 함수 등록
+              #    (성공/실패/오류 모두 포함)
+              cleanup() {
+                echo "🧹 Cleaning up script files..."
+                rm -f "${HOST_SCRIPT_PATH}"
+                rm -f "${HOST_TEMP_PATH}"
+                echo "✅ Cleanup complete."
+              }
+              trap cleanup EXIT
+
+              # 3. ⚛️ 원자적 교체 실행
+              echo "⚛️ Atomically moving ${HOST_TEMP_PATH} to ${HOST_SCRIPT_PATH}"
+              mv -f "${HOST_TEMP_PATH}" "${HOST_SCRIPT_PATH}"
+              echo "✅ File replaced."
+
+              # 4. 🚀 k6 테스트 실행
+              #    (trap이 설정되어 있으므로, 이 명령이 실패해도 cleanup은 실행됨)
               echo "🚀 Running k6 test: ${SCRIPT_FILE}"
-  
-              # docker-compose로 k6 테스트 실행
               docker-compose run --rm k6 run \
-                -o influxdb=http://influxdb:8086/k6 \     
+                -o influxdb=http://influxdb:8086/k6 \
                 "/scripts/${SCRIPT_FILE}"
+            
+              echo "K6 test finished successfully."
             '
