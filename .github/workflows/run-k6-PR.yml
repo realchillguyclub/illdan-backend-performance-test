@@ -78,6 +78,7 @@ jobs:
           key: ${{ secrets.AWS_SSH_KEY }}
           source: ${{ steps.pick_script.outputs.script_path }}
           target: ${{ env.REMOTE_BASE_PATH }}/k6
+          strip_components: 1
 
       # ------------------------------------------------------------
       # 4️⃣ EC2에서 docker-compose를 통해 k6 실행
