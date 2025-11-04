@@ -82,7 +82,7 @@ jobs:
 
       # ------------------------------------------------------------
       # 4️⃣ EC2에서 docker-compose를 통해 k6 실행
-      #     - influxdb로 결과를 저장하고, ACCESS_TOKEN과 TARGET_URL을 환경 변수로 전달
+      #     - 파일이 존재하고, 비어있지 않은지 10초간 대기
       # ------------------------------------------------------------
       - name: Run k6 on EC2 (with influxdb output)
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
@@ -95,13 +95,34 @@ jobs:
             bash -lc '
               set -euo pipefail
               cd "${{ env.REMOTE_BASE_PATH }}"    
-  
-              # GitHub Actions에서 넘겨받은 파일명 추출
+            
+              # 1. 파일 경로 정의
               SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
-  
+              HOST_SCRIPT_PATH="k6/${SCRIPT_FILE}"
+
+              # -------------------------------------------------
+              # 🔄 파일이 존재할 때까지 10초간 대기
+              #    (-f: 파일 존재)
+              # -------------------------------------------------
+              echo "⏳ Waiting for script file to exist at ${HOST_SCRIPT_PATH}..."
+              COUNT=0
+              while [ ! -f "${HOST_SCRIPT_PATH}" ]; do
+                if [ "$COUNT" -ge 10 ]; then
+                  echo "::error::File not found after 10 seconds: ${HOST_SCRIPT_PATH}"
+                  echo "Directory contents:"
+                  ls -l k6/
+                  exit 1
+                fi
+                echo "File not yet found, retrying in 1s... (Attempt $((COUNT+1)))"
+                sleep 1
+                COUNT=$((COUNT + 1))
+              done
+              echo "✅ File exists. Proceeding with k6 run."
+              # -------------------------------------------------
+
+              # 3. k6 테스트 실행
               echo "🚀 Running k6 test: ${SCRIPT_FILE}"
-  
-              # docker-compose로 k6 테스트 실행
+            
               docker-compose run --rm k6 run \
                 -o influxdb=http://influxdb:8086/k6 \     
                 "/scripts/${SCRIPT_FILE}"
