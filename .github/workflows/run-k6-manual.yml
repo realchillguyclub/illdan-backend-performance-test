@@ -6,7 +6,7 @@ on:
       ref:
         description: 'Git ref (branch/tag/SHA). 기본 main'
         required: false
-        default: 'feature/#3/test-workflow-script'
+        default: 'main'
       script_path:
         description: '실행할 JS (예: scripts/test/test.test.js)'
         required: true
@@ -39,11 +39,22 @@ jobs:
         run: |
           set -euo pipefail
           P="${{ github.event.inputs.script_path }}"
-          case "$P" in
-            scripts/*.js|scripts/**/*.js) ;;
-            *) echo "::error::scripts/ 하위의 .js 파일만 실행 가능합니다: $P"; exit 1 ;;
+
+          # 1) 형식 제한: scripts/ 로 시작하고 .js 로 끝나야 함
+          [[ "$P" =~ ^scripts/.+\.js$ ]] || { echo "::error::scripts/ 하위 .js만 허용: $P"; exit 1; }
+
+          # 2) 파일 존재
+          [[ -f "$P" ]] || { echo "::error::파일 없음: $P"; exit 1; }
+
+          # 3) 실제 경로가 scripts/ 하위인지 검증
+          WS="${GITHUB_WORKSPACE:-$PWD}"
+          REAL_P="$(realpath "$P")"
+          REAL_SCRIPTS="$(realpath "$WS/scripts")"
+          case "$REAL_P" in
+            "$REAL_SCRIPTS"/*) ;;  # OK
+            *) echo "::error::scripts 디렉터리 하위가 아닙니다: $REAL_P"; exit 1 ;;
           esac
-          [ -f "$P" ] || { echo "::error::파일 없음: $P"; exit 1; }
+
           echo "script_path=$P" >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
