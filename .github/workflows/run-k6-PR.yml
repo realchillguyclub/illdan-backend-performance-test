@@ -14,38 +14,42 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1) 저장소 체크아웃
+      # ------------------------------------------------------------
+      # 1️⃣ 저장소 체크아웃
+      # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      # 2) scripts/** 아래 JS 파일이 정확히 1개인지 확인하고, basename 추출
+      # ------------------------------------------------------------
+      # 2️⃣ scripts 폴더 내 JS 파일 개수를 확인
+      #     - 실제 PR HEAD 기준으로 존재하는 파일 개수만 계산
+      #     - 딱 1개여야 통과, 아니면 오류 발생
+      # ------------------------------------------------------------
       - name: Ensure exactly one JS script exists
         id: pick_script
         shell: bash
         run: |
           set -euo pipefail
 
-          # 하위 폴더 포함 탐색
+          # scripts 폴더 내 JS 파일 목록 추출
           mapfile -t FILES < <(find scripts -type f -name '*.js' | sort -u)
           COUNT=${#FILES[@]}
-          echo "Found JS files: ${COUNT}"
+          echo "scripts/**/*.js found: ${COUNT}"
 
+          # 파일이 정확히 1개가 아니면 에러
           if [ "$COUNT" -ne 1 ]; then
             echo "::error::scripts 폴더에는 JS 파일이 정확히 1개만 존재해야 합니다. 현재 개수=${COUNT}"
             echo "scripts_present=${COUNT}" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          ABS_PATH="${FILES[0]}"
-          BASENAME="$(basename "${ABS_PATH}")"
-
-          echo "script_path=${ABS_PATH}" >> "$GITHUB_OUTPUT"
-          echo "script_basename=${BASENAME}" >> "$GITHUB_OUTPUT"
+          # 정확히 1개면 경로를 출력 변수로 전달
+          echo "script_path=${FILES[0]}" >> "$GITHUB_OUTPUT"
           echo "scripts_present=1" >> "$GITHUB_OUTPUT"
 
-      # 3) 원격 k6 디렉터리의 기존 JS 정리
+      # 3️⃣ 기존 JS 스크립트 파일 정리
       - name: Clean old JS in remote k6 dir
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/ssh-action@v1.0.3
@@ -56,14 +60,16 @@ jobs:
           script: |
             bash -lc '
               set -euo pipefail
-              BASE="${{ env.REMOTE_BASE_PATH }}/k6"
-              echo "🧹 Removing old JS files recursively in ${BASE}"
-              find "${BASE}" -type f -name "*.js" -print -delete || true
-              find "${BASE}" -type d -empty -print -delete || true
+              echo "🧹 Removing old JS files in ${{ env.REMOTE_BASE_PATH }}/k6"
+              find "${{ env.REMOTE_BASE_PATH }}/k6" -maxdepth 1 -type f -name "*.js" -print -delete || true
             '
 
-      # 4) 단일 파일만 원격으로 전송 (상대경로 제거 → 파일명만)
-      - name: Transfer script to EC2 (flatten to filename)
+      # ------------------------------------------------------------
+      # 3️⃣ EC2로 스크립트 파일 전송
+      #     - scp-action을 사용해 scripts 내 단일 JS 파일을
+      #       EC2의 k6 디렉토리(볼륨 마운트 경로)로 복사
+      # ------------------------------------------------------------
+      - name: Transfer script to EC2
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -71,10 +77,13 @@ jobs:
           username: ${{ secrets.AWS_USER }}
           key: ${{ secrets.AWS_SSH_KEY }}
           source: ${{ steps.pick_script.outputs.script_path }}
-          # target을 디렉터리/파일명 형태로 지정 → 상대경로 없이 해당 파일명으로 업로드
-          target: ${{ env.REMOTE_BASE_PATH }}/k6/${{ steps.pick_script.outputs.script_basename }}
+          target: ${{ env.REMOTE_BASE_PATH }}/k6
+          strip_components: 2
 
-      # 5) docker-compose로 k6 실행 (/scripts/<파일명> 기준)
+      # ------------------------------------------------------------
+      # 4️⃣ EC2에서 docker-compose를 통해 k6 실행
+      #     - 파일이 존재하고, 비어있지 않은지 10초간 대기
+      # ------------------------------------------------------------
       - name: Run k6 on EC2 (with influxdb output)
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/ssh-action@v1.0.3
@@ -85,24 +94,34 @@ jobs:
           script: |
             bash -lc '
               set -euo pipefail
-              cd "${{ env.REMOTE_BASE_PATH }}"
+              cd "${{ env.REMOTE_BASE_PATH }}"    
+            
+              # 1. 파일 경로 정의
+              SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
+              HOST_SCRIPT_PATH="k6/${SCRIPT_FILE}"
 
-              BASENAME="${{ steps.pick_script.outputs.script_basename }}"
-              HOST_SCRIPT_PATH="k6/${BASENAME}"
-
-              echo "⏳ Waiting for ${HOST_SCRIPT_PATH}..."
+              # -------------------------------------------------
+              # 🔄 파일이 존재할 때까지 10초간 대기
+              #    (-f: 파일 존재)
+              # -------------------------------------------------
+              echo "⏳ Waiting for script file to exist at ${HOST_SCRIPT_PATH}..."
               COUNT=0
               while [ ! -f "${HOST_SCRIPT_PATH}" ]; do
                 if [ "$COUNT" -ge 10 ]; then
                   echo "::error::File not found after 10 seconds: ${HOST_SCRIPT_PATH}"
-                  echo "Directory contents of k6/:"
-                  ls -la k6/ || true
+                  echo "Directory contents:"
+                  ls -l k6/
                   exit 1
                 fi
+                echo "File not yet found, retrying in 1s... (Attempt $((COUNT+1)))"
                 sleep 1
-                COUNT=$((COUNT+1))
+                COUNT=$((COUNT + 1))
               done
+              echo "✅ File exists. Proceeding with k6 run."
+              # -------------------------------------------------
 
-              echo "✅ File exists. Running k6: /scripts/${BASENAME}"
-              docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet "/scripts/${BASENAME}"
+              # 3. k6 테스트 실행
+              echo "🚀 Running k6 test: ${SCRIPT_FILE}"
+            
+              docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet /scripts/${SCRIPT_FILE}
             '
