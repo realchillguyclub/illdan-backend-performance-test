@@ -27,27 +27,22 @@ jobs:
       #     - 실제 PR HEAD 기준으로 존재하는 파일 개수만 계산
       #     - 딱 1개여야 통과, 아니면 오류 발생
       # ------------------------------------------------------------
-      - name: Ensure exactly one JS script exists
+      - name: Pick exactly one script (under scripts/)
         id: pick_script
         shell: bash
         run: |
           set -euo pipefail
-
-          # scripts 폴더 내 JS 파일 목록 추출
-          mapfile -t FILES < <(find scripts -type f -name '*.js' | sort -u)
+          mapfile -t FILES < <(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'scripts/**/*.js' | sort -u)
           COUNT=${#FILES[@]}
-          echo "scripts/**/*.js found: ${COUNT}"
+          echo "changed js under scripts/: $COUNT"
+          [ "$COUNT" -eq 1 ] || { echo "::error::PR에는 scripts/ 하위 JS가 정확히 1개만 있어야 합니다"; exit 1; }
 
-          # 파일이 정확히 1개가 아니면 에러
-          if [ "$COUNT" -ne 1 ]; then
-            echo "::error::scripts 폴더에는 JS 파일이 정확히 1개만 존재해야 합니다. 현재 개수=${COUNT}"
-            echo "scripts_present=${COUNT}" >> "$GITHUB_OUTPUT"
-            exit 1
-          fi
+          P="${FILES[0]}"
+          [[ "$P" =~ ^scripts/.+\.js$ ]] || { echo "::error::scripts/ 하위 .js만 허용: $P"; exit 1; }
+          REL="${P#scripts/}"   # scripts/ 이하 상대경로
 
-          # 정확히 1개면 경로를 출력 변수로 전달
-          echo "script_path=${FILES[0]}" >> "$GITHUB_OUTPUT"
-          echo "scripts_present=1" >> "$GITHUB_OUTPUT"
+          echo "script_path=$P"   >> "$GITHUB_OUTPUT"
+          echo "script_rel=$REL"  >> "$GITHUB_OUTPUT"
 
       # 3️⃣ 기존 JS 스크립트 파일 정리
       - name: Clean old JS in remote k6 dir
@@ -97,7 +92,7 @@ jobs:
               cd "${{ env.REMOTE_BASE_PATH }}"    
             
               # 1. 파일 경로 정의
-              SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
+              SCRIPT_FILE="${{ steps.pick_script.outputs.script_rel }}"
               HOST_SCRIPT_PATH="k6/${SCRIPT_FILE}"
 
               # -------------------------------------------------
