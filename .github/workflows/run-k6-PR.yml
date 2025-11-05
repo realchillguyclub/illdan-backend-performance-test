@@ -123,5 +123,5 @@ jobs:
               # 3. k6 테스트 실행
               echo "🚀 Running k6 test: ${SCRIPT_FILE}"
             
-              docker-compose run -T --rm k6 run -o influxdb=http://influxdb:8086/k6 /scripts/${SCRIPT_FILE}
+              docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet /scripts/${SCRIPT_FILE}
             '
