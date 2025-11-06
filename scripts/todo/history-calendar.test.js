@@ -8,7 +8,7 @@ const ACCESS_TOKEN  = __ENV.ACCESS_TOKEN; // "Bearer ..." 미포함 시 자동�
 const APP_VERSION = 'V2';         // V1(레거시) | V2(신규)
 const YEAR        = '2025';
 const MONTH       = '10';
-const MONTH_LIST  = (__ENV.MONTH_LIST || '').trim();   // "1,2,3" 식으로 전달하면 스윕
+const MONTH_LIST  = (__ENV.MONTH_LIST || '').trim();
 
 // ===================== 커스텀 메트릭 =====================
 export const http5xxRate = new Rate('http_5xx_rate');
