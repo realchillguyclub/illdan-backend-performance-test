@@ -29,24 +29,42 @@ jobs:
           ref: ${{ github.event.inputs.ref }}
 
       # ------------------------------------------------------------
-      # 2️⃣ script_path 유효성 검사
-      #    - scripts/ 하위의 .js 파일만 허용
-      #    - 지정한 ref 기준으로 파일이 존재해야 함
+      # 2️⃣ script_path 유효성 검사 (scripts/**.js만 허용 + 유일 매칭)
+      #    - rel_path: scripts/ 이후의 상대경로 (예: todo/foo.js)
+      #    - rel_dir : 상대 디렉터리 (예: todo)
       # ------------------------------------------------------------
       - name: Validate script_path
         id: pick_script
         shell: bash
         run: |
           set -euo pipefail
-          P="${{ github.event.inputs.script_path }}"
+          IN="${{ github.event.inputs.script_path }}"
 
-          # 1) 형식 제한: scripts/ 로 시작하고 .js 로 끝나야 함
-          [[ "$P" =~ ^scripts/.+\.js$ ]] || { echo "::error::scripts/ 하위 .js만 허용: $P"; exit 1; }
+          shopt -s nullglob globstar
 
-          # 2) 파일 존재
-          [[ -f "$P" ]] || { echo "::error::파일 없음: $P"; exit 1; }
+          if [[ "$IN" == scripts/*.js || "$IN" == scripts/**/*.js ]]; then
+            candidates=( $IN )
+          else
+            candidates=( scripts/**/"$IN" )
+          fi
 
-          # 3) 실제 경로가 scripts/ 하위인지 검증
+          filtered=()
+          for f in "${candidates[@]}"; do
+            [[ -f "$f" && "$f" == *.js ]] && filtered+=( "$f" )
+          done
+          candidates=( "${filtered[@]}" )
+
+          if (( ${#candidates[@]} == 0 )); then
+            echo "::error::대상 파일을 찾지 못했습니다: $IN (scripts/** 아래 검색)"
+            exit 1
+          elif (( ${#candidates[@]} > 1 )); then
+            echo "::error::여러 파일이 매칭되었습니다. 정확한 경로로 지정하세요:"
+            printf '%s\n' "${candidates[@]}"
+            exit 1
+          fi
+
+          P="${candidates[0]}"
+
           WS="${GITHUB_WORKSPACE:-$PWD}"
           REAL_P="$(realpath "$P")"
           REAL_SCRIPTS="$(realpath "$WS/scripts")"
@@ -55,12 +73,23 @@ jobs:
             *) echo "::error::scripts 디렉터리 하위가 아닙니다: $REAL_P"; exit 1 ;;
           esac
 
-          echo "script_path=$P" >> "$GITHUB_OUTPUT"
+          # scripts/ 이후 상대경로 계산 (예: todo/foo.js)
+          REL_PATH="${P#scripts/}"
+          REL_DIR="$(dirname "$REL_PATH")"
+          BASENAME="$(basename "$P")"
+
+          {
+            echo "script_path=$P"
+            echo "rel_path=$REL_PATH"
+            echo "rel_dir=$REL_DIR"
+            echo "basename=$BASENAME"
+            echo "scripts_present=1"
+          } >> "$GITHUB_OUTPUT"
 
       # ------------------------------------------------------------
-      # 3️⃣ 원격 k6 디렉터리의 기존 JS 정리 (JS만 삭제, 기타 파일 보존)
+      # 3️⃣ 원격 k6 디렉터리 전체 비우기 (하위 디렉토리까지 전부 삭제)
       # ------------------------------------------------------------
-      - name: Clean old JS (remote)
+      - name: Clean remote k6 directory
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.AWS_HOST }}
@@ -69,14 +98,19 @@ jobs:
           script: |
             bash -lc '
               set -euo pipefail
-              echo "🧹 Removing old JS files in ${{ env.REMOTE_BASE_PATH }}/k6"
-              find "${{ env.REMOTE_BASE_PATH }}/k6" -maxdepth 1 -type f -name "*.js" -print -delete || true
+              BASE="${{ env.REMOTE_BASE_PATH }}/k6"
+              echo "🧹 Purging: ${BASE}"
+              mkdir -p "${BASE}"
+              # 하위 모든 파일/디렉토리 삭제 (k6 자체는 유지)
+              find "${BASE}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+              ls -la "${BASE}" || true
             '
 
       # ------------------------------------------------------------
-      # 4️⃣ 선택된 스크립트만 원격 k6 디렉터리로 전송
+      # 4️⃣ 선택된 스크립트를 상대경로 보존해 업로드 (scripts/ 잘라서 k6/ 아래로)
       # ------------------------------------------------------------
-      - name: Upload selected script
+      - name: Upload selected script (preserve relative path)
+        if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.AWS_HOST }}
@@ -84,10 +118,12 @@ jobs:
           key: ${{ secrets.AWS_SSH_KEY }}
           source: ${{ steps.pick_script.outputs.script_path }}
           target: ${{ env.REMOTE_BASE_PATH }}/k6
+          strip_components: 1   # ← scripts/ 한 단계 제거 → k6/<rel_path>로 업로드
+          overwrite: true
 
       # ------------------------------------------------------------
-      # 5️⃣ EC2에서 docker-compose를 통해 k6 실행
-      #     - 파일이 존재하고, 비어있지 않은지 10초간 대기
+      # 5️⃣ EC2에서 docker-compose로 k6 실행 (k6/ 다음에 rel_path 그대로 실행)
+      #     - /scripts 가 호스트의 ${REMOTE_BASE_PATH}/k6 에 마운트되어 있다고 가정
       # ------------------------------------------------------------
       - name: Run k6 on EC2 (with influxdb output)
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
@@ -99,34 +135,23 @@ jobs:
           script: |
             bash -lc '
               set -euo pipefail
-              cd "${{ env.REMOTE_BASE_PATH }}"    
+              cd "${{ env.REMOTE_BASE_PATH }}"
 
-              # 1. 파일 경로 정의
-              SCRIPT_FILE=$(basename "${{ steps.pick_script.outputs.script_path }}")
-              HOST_SCRIPT_PATH="k6/${SCRIPT_FILE}"
+              REL_PATH="${{ steps.pick_script.outputs.rel_path }}"   # ex) todo/history-calendar.test.js
+              HOST_SCRIPT_PATH="k6/${REL_PATH}"
 
-              # -------------------------------------------------
-              # 🔄 파일이 존재할 때까지 10초간 대기
-              #    (-f: 파일 존재)
-              # -------------------------------------------------
-              echo "⏳ Waiting for script file to exist at ${HOST_SCRIPT_PATH}..."
+              echo "⏳ Waiting for ${HOST_SCRIPT_PATH} to appear..."
               COUNT=0
               while [ ! -f "${HOST_SCRIPT_PATH}" ]; do
                 if [ "$COUNT" -ge 10 ]; then
                   echo "::error::File not found after 10 seconds: ${HOST_SCRIPT_PATH}"
-                  echo "Directory contents:"
-                  ls -l k6/
+                  echo "Directory contents of k6:"; ls -Rla k6/ || true
                   exit 1
                 fi
-                echo "File not yet found, retrying in 1s... (Attempt $((COUNT+1)))"
-                sleep 1
-                COUNT=$((COUNT + 1))
+                sleep 1; COUNT=$((COUNT+1))
               done
-              echo "✅ File exists. Proceeding with k6 run."
-              # -------------------------------------------------
+              echo "✅ Found ${HOST_SCRIPT_PATH}"
 
-              # 3. k6 테스트 실행
-              echo "🚀 Running k6 test: ${SCRIPT_FILE}"
-
-              docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet /scripts/${SCRIPT_FILE}
+              echo "🚀 Running k6: /scripts/${REL_PATH}"
+              docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet "/scripts/${REL_PATH}"
             '
