@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [ main ]
     paths:
-      - 'scripts/**/*.js'
+      - 'scripts/**/*.js'   # scripts 내 JS 파일이 변경될 때만 CI 실행
 
 env:
   REMOTE_BASE_PATH: ${{ secrets.REMOTE_BASE_PATH }}
@@ -15,7 +15,7 @@ jobs:
 
     steps:
       # ------------------------------------------------------------
-      # 1️⃣ 저장소 체크아웃
+      # 1️⃣ 저장소 체크아웃 (전체 이력 필요 → fetch-depth: 0)
       # ------------------------------------------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -23,44 +23,51 @@ jobs:
           fetch-depth: 0
 
       # ------------------------------------------------------------
-      # 2️⃣ scripts 폴더 내 JS 파일 개수를 확인 (PR HEAD 기준)
-      #     - 정확히 1개만 허용
-      #     - scripts/ 이후 상대경로(rel_path)도 추출
+      # 2️⃣ PR에서 "변경된" scripts/**/*.js 파일만 수집
+      #     - 레포 전체가 아니라, PR diff 기준
+      #     - 정확히 1개만 있어야 다음 단계 진행
       # ------------------------------------------------------------
-      - name: Ensure exactly one JS script exists
+      - name: Detect changed JS script in PR
         id: pick_script
         shell: bash
         run: |
           set -euo pipefail
 
-          # scripts 폴더 내 JS 파일 목록 추출
-          mapfile -t FILES < <(find scripts -type f -name '*.js' | sort -u)
+          echo "🔍 Collecting changed scripts/**/*.js from PR..."
+
+          # base 브랜치(main)와 현재 HEAD 사이의 공통 조상 SHA
+          BASE_SHA=$(git merge-base HEAD origin/main)
+
+          # 변경된 JS 파일만 추출
+          mapfile -t FILES < <(
+            git diff --name-only "$BASE_SHA"...HEAD -- 'scripts/**/*.js' | sort -u
+          )
+
           COUNT=${#FILES[@]}
-          echo "scripts/**/*.js found: ${COUNT}"
+          echo "Changed JS files in PR: ${COUNT}"
+          printf '%s\n' "${FILES[@]}"
 
           if [ "$COUNT" -ne 1 ]; then
-            echo "::error::scripts 폴더에는 JS 파일이 정확히 1개만 존재해야 합니다. 현재 개수=${COUNT}"
+            echo "::error::PR에서는 scripts/**/*.js 파일이 정확히 1개만 변경되어야 합니다. 현재 변경된 개수=${COUNT}"
             echo "scripts_present=${COUNT}" >> "$GITHUB_OUTPUT"
             exit 1
           fi
 
-          P="${FILES[0]}"
-
-          # scripts/ 이후 상대경로 (예: todo/history-calendar.test.js)
-          REL_PATH="${P#scripts/}"
-          REL_DIR="$(dirname "$REL_PATH")"
-          BASENAME="$(basename "$P")"
+          TARGET_FILE="${FILES[0]}"
+          REL_PATH="${TARGET_FILE#scripts/}"
 
           {
-            echo "script_path=$P"
-            echo "rel_path=$REL_PATH"
-            echo "rel_dir=$REL_DIR"
-            echo "basename=$BASENAME"
+            echo "script_path=${TARGET_FILE}"
+            echo "rel_path=${REL_PATH}"
             echo "scripts_present=1"
           } >> "$GITHUB_OUTPUT"
 
+          echo "📌 Selected script: ${TARGET_FILE}"
+          echo "📌 Relative path  : ${REL_PATH}"
+
       # ------------------------------------------------------------
-      # 3️⃣ 원격 k6 디렉터리 전체 비우기 (하위 디렉토리까지 전부 삭제)
+      # 3️⃣ 원격 k6 디렉토리 완전 초기화
+      #     - 기존 history-calendar.js 등 잔여 파일 모두 제거
       # ------------------------------------------------------------
       - name: Purge remote k6 directory
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
@@ -73,18 +80,21 @@ jobs:
             bash -lc '
               set -euo pipefail
               BASE="${{ env.REMOTE_BASE_PATH }}/k6"
-              echo "🧹 Purging: ${BASE}"
+              echo "🧹 Purging remote directory: ${BASE}"
+
               mkdir -p "${BASE}"
-              # 하위 모든 파일/디렉토리 삭제 (k6 루트는 유지)
               find "${BASE}" -mindepth 1 -maxdepth 1 -exec rm -rf {} +
+
+              echo "📁 After purge:"
               ls -Rla "${BASE}" || true
             '
 
       # ------------------------------------------------------------
-      # 4️⃣ 상대경로 보존해 업로드 (scripts/ 이후 경로를 그대로 k6/ 아래에 만든다)
-      #     - 예: scripts/todo/foo.js  =>  ${REMOTE_BASE_PATH}/k6/todo/foo.js
+      # 4️⃣ 변경된 JS 파일을 EC2로 업로드
+      #     - scripts/ 이후 상대 경로 유지
+      #     - 예: scripts/todo/backlogs.load.js → k6/todo/backlogs.load.js
       # ------------------------------------------------------------
-      - name: Transfer script to EC2 (preserve relative path)
+      - name: Transfer JS script to EC2
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -93,16 +103,13 @@ jobs:
           key: ${{ secrets.AWS_SSH_KEY }}
           source: ${{ steps.pick_script.outputs.script_path }}
           target: ${{ env.REMOTE_BASE_PATH }}/k6
-          # 'scripts/' 한 단계만 제거 -> k6/ 이하에 rel_path 유지 (todo/foo.js)
-          strip_components: 1
+          strip_components: 1     # scripts/ 제거
           overwrite: true
 
       # ------------------------------------------------------------
       # 5️⃣ EC2에서 docker-compose로 k6 실행
-      #     - /scripts 는 ${REMOTE_BASE_PATH}/k6 이 마운트되어 있어야 함
-      #     - /scripts/<rel_path> 로 실행 (예: /scripts/todo/foo.js)
       # ------------------------------------------------------------
-      - name: Run k6 on EC2 (with influxdb output)
+      - name: Run k6 on EC2
         if: ${{ steps.pick_script.outputs.scripts_present == '1' }}
         uses: appleboy/ssh-action@v1.0.3
         with:
@@ -114,21 +121,22 @@ jobs:
               set -euo pipefail
               cd "${{ env.REMOTE_BASE_PATH }}"
 
-              REL_PATH="${{ steps.pick_script.outputs.rel_path }}"   # ex) todo/history-calendar.test.js
+              REL_PATH="${{ steps.pick_script.outputs.rel_path }}"
               HOST_SCRIPT_PATH="k6/${REL_PATH}"
 
-              echo "⏳ Waiting for ${HOST_SCRIPT_PATH} to appear..."
-              COUNT=0
-              while [ ! -f "${HOST_SCRIPT_PATH}" ]; do
-                if [ "$COUNT" -ge 10 ]; then
-                  echo "::error::File not found after 10 seconds: ${HOST_SCRIPT_PATH}"
-                  echo "Directory contents of k6:"; ls -Rla k6/ || true
+              echo "⏳ Waiting for ${HOST_SCRIPT_PATH} to sync..."
+              for i in {1..10}; do
+                if [ -f "${HOST_SCRIPT_PATH}" ]; then
+                  echo "✅ Script found: ${HOST_SCRIPT_PATH}"
+                  break
+                fi
+                sleep 1
+                if [ "$i" -eq 10 ]; then
+                  echo "::error::Script not found after 10 seconds: ${HOST_SCRIPT_PATH}"
                   exit 1
                 fi
-                sleep 1; COUNT=$((COUNT+1))
               done
-              echo "✅ Found ${HOST_SCRIPT_PATH}"
 
-              echo "🚀 Running k6: /scripts/${REL_PATH}"
+              echo "🚀 Running k6 with script: /scripts/${REL_PATH}"
               docker-compose run --rm k6 run -o influxdb=http://influxdb:8086/k6 --quiet "/scripts/${REL_PATH}"
             '
