@@ -7,9 +7,9 @@ const TARGET_URL   = (__ENV.TARGET_URL || '').replace(/\/+$/, '');
 const ACCESS_TOKEN = __ENV.ACCESS_TOKEN || '';
 
 // ===================== 고정값 =====================
-const CATEGORY_ID = '-1';
-const PAGE        = '0';
-const SIZE        = '100';
+const CATEGORY = '-1';   // ← 서버 요구사항: category
+const PAGE     = '0';
+const SIZE     = '100';
 const MOBILE_TYPE = 'ANDROID';
 
 // ===================== 커스텀 메트릭 =====================
@@ -66,10 +66,13 @@ function buildHeaders() {
 }
 
 function buildUrl() {
-  return `${TARGET_URL}/backlogs` +
-    `?categoryId=${CATEGORY_ID}` +
+  // ⚠️ 실제 API는 category= 으로 전달해야 함!
+  return (
+    `${TARGET_URL}/backlogs` +
+    `?category=${CATEGORY}` +
     `&page=${PAGE}` +
-    `&size=${SIZE}`;
+    `&size=${SIZE}`
+  );
 }
 
 function recordMetrics(res) {
@@ -115,12 +118,12 @@ export function handleSummary(data) {
   const txt = [
     '=== /backlogs Load Test Summary ===',
     `Target URL       : ${TARGET_URL}`,
+    `Query Params     : category=${CATEGORY}, page=${PAGE}, size=${SIZE}`,
     `Total Requests   : ${totalReqs}`,
     `Avg RPS          : ${rps.toFixed(1)}`,
     '',
     `latency_backlogs_ms p95 : ${p95Back.toFixed(1)} ms`,
-    `ttfb_backlogs_ms   p95 : ${p95Ttfb.toFixed(1)} ms`,
-    '',
+    `ttfb_backlogs_ms   p95  : ${p95Ttfb.toFixed(1)} ms`,
   ].join('\n');
 
   return {
