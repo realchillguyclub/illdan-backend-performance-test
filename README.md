@@ -3,7 +3,7 @@
 본 레포지토리는 ILLDAN 백엔드 서비스의 성능을 측정, 분석 및 관리하기 위한 테스트 스크립트 저장소입니다. 모든 테스트는 GitHub Actions를 통해 자동화되어 실행됩니다.
 
 ## 모니터링 / 성능 테스트 서버 아키텍처
-<img width="4611" height="2582" alt="Image" src="https://github.com/user-attachments/assets/a258f9c3-36b3-4602-8795-eebe56e4c991" />
+![monitoring_performance-test_server_architecture.png](assets/monitoring_performance-test_server_architecture.png)
 
 
 <br>
