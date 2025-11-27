@@ -2,6 +2,10 @@
 
 본 레포지토리는 ILLDAN 백엔드 서비스의 성능을 측정, 분석 및 관리하기 위한 테스트 스크립트 저장소입니다. 모든 테스트는 GitHub Actions를 통해 자동화되어 실행됩니다.
 
+## 모니터링 / 성능 테스트 서버 아키텍처
+![monitoring_performance-test_server_architecture.png](assets/monitoring_performance-test_server_architecture.png)
+
+
 <br>
 
 ## ⚙️ 테스트 워크플로우
@@ -72,4 +76,3 @@ PR 생성 시에는 `.github/pull_request_template.md` 템플릿이 자동으로
     3.  **테스트 결과**: **성공적으로 완료된 GitHub Actions 실행 링크**와 주요 결과 지표를 반드시 요약하여 기입합니다.
 
 -   **Checklist**: 리뷰를 요청하기 전, 템플릿의 체크리스트 항목을 모두 확인하고 체크합니다.
-- 
