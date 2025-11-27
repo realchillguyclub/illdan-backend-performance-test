@@ -19,27 +19,31 @@ export const http4xxRate     = new Rate('http_4xx_rate');
 export const http5xxRate     = new Rate('http_5xx_rate');
 export const failures        = new Counter('checks_failed');
 
-// ===================== 옵션 (Load Test) =====================
+// ===================== 옵션 (Load / 약한 Stress 겸용) =====================
 export const options = {
   thresholds: {
     http_req_failed: ['rate==0'],       // 전체 실패율 0%
     http_4xx_rate:   ['rate==0'],       // 4xx 없음
     http_5xx_rate:   ['rate==0'],       // 5xx 없음
-    latency_backlogs_ms: ['p(95)<100'], // 목표 구간 p95 < 100ms
+    latency_backlogs_ms: ['p(95)<100'], // 목표 구간 p95 < 100ms (깨지는 지점 확인용)
   },
   scenarios: {
     backlogs_load: {
       executor: 'ramping-arrival-rate',
       exec: 'backlogsScenario',
-      startRate: 5,
+      startRate: 5,          // 시작 RPS
       timeUnit: '1s',
-      preAllocatedVUs: 20,
-      maxVUs: 100,
+      preAllocatedVUs: 50,
+      maxVUs: 500,
       stages: [
-        { target: 5,  duration: '1m' },
         { target: 10, duration: '2m' },
-        { target: 20, duration: '3m' },
-        { target: 0,  duration: '1m' },
+        { target: 20, duration: '2m' },
+        { target: 30, duration: '2m' },
+        { target: 40, duration: '2m' },
+        { target: 50, duration: '2m' },
+        { target: 60, duration: '2m' },
+        // 램프다운
+        { target: 0,  duration: '2m' },
       ],
       tags: { scenario: 'backlogs_load' },
     },
@@ -103,6 +107,8 @@ function callBacklogs() {
 // ===================== 시나리오 엔트리 =====================
 export function backlogsScenario() {
   callBacklogs();
+  // arrival-rate라 sleep은 RPS에 큰 영향 없지만,
+  // 사용자 think-time 느낌을 위해 0.3~0.6초 정도만 줌
   sleep(0.3 + Math.random() * 0.3);
 }
 
@@ -116,7 +122,7 @@ export function handleSummary(data) {
   const p95Ttfb = data.metrics.ttfb_backlogs_ms?.values['p(95)'] || 0;
 
   const txt = [
-    '=== /backlogs Load Test Summary ===',
+    '=== /backlogs Load(+Stress) Test Summary ===',
     `Target URL       : ${TARGET_URL}`,
     `Query Params     : category=${CATEGORY}, page=${PAGE}, size=${SIZE}`,
     `Total Requests   : ${totalReqs}`,
