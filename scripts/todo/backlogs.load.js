@@ -33,7 +33,7 @@ export const options = {
       exec: 'backlogsScenario',
       startRate: 5,          // 시작 RPS
       timeUnit: '1s',
-      preAllocatedVUs: 100,
+      preAllocatedVUs: 20,
       maxVUs: 1000,
       stages: [
         { target: 10, duration: '2m' },
