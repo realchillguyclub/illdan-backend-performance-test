@@ -42,8 +42,6 @@ export const options = {
         { target: 40, duration: '2m' },
         { target: 50, duration: '2m' },
         { target: 60, duration: '2m' },
-        { target: 70, duration: '2m' },
-        { target: 80, duration: '2m' },
         // 램프다운
         { target: 0,  duration: '2m' },
       ],
