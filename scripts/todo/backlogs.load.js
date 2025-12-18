@@ -31,18 +31,17 @@ export const options = {
     backlogs_load: {
       executor: 'ramping-arrival-rate',
       exec: 'backlogsScenario',
-      startRate: 70,          // 시작 RPS
+      startRate: 5,          // 시작 RPS
       timeUnit: '1s',
-      preAllocatedVUs: 100,
+      preAllocatedVUs: 20,
       maxVUs: 1000,
       stages: [
-        { target: 80, duration: '2m' },
-        { target: 90, duration: '2m' },
-        { target: 100, duration: '2m' },
-        { target: 110, duration: '2m' },
-        { target: 120, duration: '2m' },
-        { target: 130, duration: '2m' },
-        { target: 140, duration: '2m' },
+        { target: 10, duration: '2m' },
+        { target: 20, duration: '2m' },
+        { target: 30, duration: '2m' },
+        { target: 40, duration: '2m' },
+        { target: 50, duration: '2m' },
+        { target: 60, duration: '2m' },
         // 램프다운
         { target: 0,  duration: '2m' },
       ],
